@@ -1,7 +1,9 @@
 use axum::{
     self,
-    extract::{Path, Query},
-    http::{HeaderMap, Method},
+    extract::{Path, Query, Request, State},
+    http::{HeaderMap, Method, StatusCode},
+    middleware::{from_fn, Next},
+    response::Response,
     routing::{get, post},
     Extension, Json, Router,
 };
@@ -22,6 +24,12 @@ async fn main() {
 
     //Router
     let app = Router::new()
+        .route(
+            // Route that will receive the custom header set by the `set_custom_middleware_header`
+            "/read_middleware_custom_header",
+            get(read_middleware_custom_header),
+        )
+        .layer(from_fn(set_custom_middleware_header))
         .route("/", get(hello_world))
         .route("/mirror_body_string", post(mirror_body_string)) // Extracting string from request body route example
         .route("/mirror_body_json", post(mirror_body_json)) // Extracting JSON from request body route example
@@ -31,7 +39,7 @@ async fn main() {
         .route("/mirror_headers/", get(mirror_headers)) // Extract headers using HeaderMap
         .route("/middleware_message", get(middleware_message))
         .layer(cors) // Adds the CORS middleware. It should always be added in the end as doing so effects every route above it from it
-        .layer(Extension(shared_data)); // Allows
+        .layer(Extension(shared_data)); // Allows sharing of common data with the routes above this layer
 
     //Listener
     let listener = TcpListener::bind("127.0.0.1:3000").await.unwrap();
@@ -77,6 +85,33 @@ async fn middleware_message(Extension(shared_data): Extension<SharedData>) -> St
     shared_data.message
 }
 
+async fn read_middleware_custom_header(Extension(message): Extension<HeaderMessage>) -> String {
+    message.0
+}
+
+// Function setting custom middleware
+async fn set_custom_middleware_header(
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let headers = req.headers();
+    let message = headers
+        .get("message")
+        .ok_or_else(|| StatusCode::BAD_REQUEST)?;
+
+    let message = message
+        .to_str()
+        .map_err(|_error| StatusCode::BAD_REQUEST)?
+        .to_owned(); // Why did adding to_owned() here fix the error ? You can see the error by removing the to_owned method
+
+    let extensions = req.extensions_mut();
+
+    extensions.insert(HeaderMessage(message.to_owned()));
+
+    let response = next.run(req).await;
+    Ok(response)
+}
+
 // Struct for handling JSON data via Serialization and Deserialization
 #[derive(Serialize, Deserialize, Debug)]
 struct MirrorJson {
@@ -100,3 +135,7 @@ struct Data {
 struct SharedData {
     message: String,
 }
+
+// Struct for HeaderMessage custom middleware
+#[derive(Clone)]
+struct HeaderMessage(String);
